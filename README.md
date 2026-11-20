@@ -6,6 +6,8 @@ A patch for the Codex CLI that enlarges a local image when you move the pointer 
 
 Use Ghostty or Kitty directly with Kitty graphics support. The first version targets the fullscreen CLI and local Codex sessions. The terminal must forward mouse motion. Terminal scrollback mode, tmux image passthrough, Sixel and remote image URLs are outside this version's scope.
 
+Install the official Codex CLI **0.170.0** first. The installer copies its two companion executables and builds the patched CLI. Set `CODEX_UPSTREAM_BIN_DIR` if the official executables are outside your command lookup path.
+
 Install Git, Bash, Rustup and your distribution's native build dependencies for Codex, including a C/C++ toolchain, pkg-config and libcap headers. The first build downloads and compiles the upstream Rust workspace.
 
 ```sh

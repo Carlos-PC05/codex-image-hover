@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source_dir=$1
-destination=$2
-bin=$3
+codex_binary=$1
+helper_dir=$2
+destination=$3
+bin=$4
 
 mkdir -p -- "$destination" "$bin"
 stage=$(mktemp -d "$destination/build.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
-for executable in codex codex-exec-server codex-code-mode-host; do
-    install -m 755 -- "$source_dir/$executable" "$stage/$executable"
+install -m 755 -- "$codex_binary" "$stage/codex"
+for executable in codex-exec-server codex-code-mode-host; do
+    install -m 755 -- "$helper_dir/$executable" "$stage/$executable"
 done
 "$stage/codex" --version
 
