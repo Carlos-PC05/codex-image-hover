@@ -35,7 +35,10 @@ git apply --check "$project/image-hover.patch"
 git apply "$project/image-hover.patch"
 
 cd codex-rs
+# The release tag stamps workspace manifests but keeps their 0.0.0 lockfile versions.
+sed -i "s/^version = \"0.0.0\"$/version = \"${tag#rust-v}\"/" Cargo.lock
 rustup toolchain install "$toolchain" --profile minimal
+export CARGO_NET_GIT_FETCH_WITH_CLI=true
 export CARGO_TARGET_DIR="$build/target"
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_DEV_INCREMENTAL=false
 cargo +"$toolchain" build --locked -j "$jobs" -p codex-cli --bin codex
