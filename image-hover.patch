@@ -1,0 +1,291 @@
+diff --git i/codex-rs/tui/src/app.rs w/codex-rs/tui/src/app.rs
+index 9e73ea4..4659564 100644
+--- i/codex-rs/tui/src/app.rs
++++ w/codex-rs/tui/src/app.rs
+@@ -890,7 +890,8 @@ impl App {
+         tui.link_hover.observe(&event);
+         let current = tui.link_hover.position();
+         if previous != current
+-            && self.hovered_sidebar_target(previous) != self.hovered_sidebar_target(current)
++            && (self.hovered_sidebar_target(previous) != self.hovered_sidebar_target(current)
++                || tui.image_hover_target(previous) != tui.image_hover_target(current))
+         {
+             tui.frame_requester().schedule_frame();
+         }
+diff --git i/codex-rs/tui/src/custom_terminal.rs w/codex-rs/tui/src/custom_terminal.rs
+index d0dde7f..a9c63f2 100644
+--- i/codex-rs/tui/src/custom_terminal.rs
++++ w/codex-rs/tui/src/custom_terminal.rs
+@@ -451,6 +451,8 @@ where
+                 let id = first_id + index as u32;
+                 let kitty_placement = if self.tmux_kitty_image_base.is_some() {
+                     crate::pets::KittyPlacement::Virtual(id)
++                } else if placement.image.source.is_none() {
++                    crate::pets::KittyPlacement::Overlay(id)
+                 } else {
+                     crate::pets::KittyPlacement::Cursor(id)
+                 };
+@@ -945,6 +947,55 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn image_hover_enlarges_the_original_and_removes_the_overlay() {
++        use crate::pets::ImageProtocol;
++        use crate::transcript_image::ImageHover;
++        use crate::transcript_image::ImagePlacement;
++        use crate::transcript_image::TranscriptImage;
++        use std::sync::Arc;
++
++        let dir = tempfile::tempdir().unwrap();
++        let path = dir.path().join("source.png");
++        image::RgbaImage::from_pixel(640, 480, image::Rgba([10, 110, 200, 255]))
++            .save(&path)
++            .unwrap();
++        let image = Arc::new(TranscriptImage::load(&path, 40, ImageProtocol::Kitty).unwrap());
++        let mut terminal =
++            Terminal::with_options(CaptureBackend::new(/*width*/ 80, /*height*/ 30)).unwrap();
++        let size = terminal.last_known_screen_size;
++        let viewport = Rect::new(0, 0, size.width, size.height);
++        terminal.set_viewport_area(viewport);
++        let thumbnail = Rect::new(2, 24, image.columns, image.rows);
++        let mut retained = Vec::new();
++        let mut hover = ImageHover::default();
++        for position in [(2, 24).into(), (3, 24).into(), (1, 24).into()] {
++            terminal
++                .draw_with_size(size, &mut retained, |frame| {
++                    frame.image_placements.push(ImagePlacement {
++                        image: Arc::clone(&image),
++                        area: thumbnail,
++                        first_row: 0,
++                        file: None,
++                    });
++                    hover.paint(frame, position);
++                })
++                .unwrap();
++            if thumbnail.contains(position) {
++                assert_eq!(retained.len(), 2);
++                let overlay = &retained[1];
++                assert!(overlay.image.pixels.width() > image.pixels.width());
++                assert_eq!(overlay.area.intersection(viewport), overlay.area);
++                assert!(!overlay.area.intersects(thumbnail));
++            } else {
++                assert_eq!(retained.len(), 1);
++            }
++        }
++        let output = terminal.backend().output();
++        assert_eq!(output.matches(",z=1").count(), 1);
++        assert!(output.contains("_Ga=d,d=I,i=49409"));
++    }
++
+     #[test]
+     fn transcript_images_survive_unrelated_redraws_and_are_removed_for_overlays() {
+         let dir = tempfile::tempdir().unwrap();
+diff --git i/codex-rs/tui/src/pets/image_protocol.rs w/codex-rs/tui/src/pets/image_protocol.rs
+index 38f387e..89a0f5f 100644
+--- i/codex-rs/tui/src/pets/image_protocol.rs
++++ w/codex-rs/tui/src/pets/image_protocol.rs
+@@ -230,6 +230,7 @@ pub fn kitty_delete_image(image_id: u32) -> String {
+ #[derive(Clone, Copy)]
+ pub(crate) enum KittyPlacement {
+     Cursor(u32),
++    Overlay(u32),
+     Virtual(u32),
+ }
+ 
+@@ -310,6 +311,7 @@ pub fn kitty_transmit_png_file_with_id(
+ fn kitty_image_id_arg(placement: KittyPlacement) -> String {
+     match placement {
+         KittyPlacement::Cursor(id) => format!(",i={id}"),
++        KittyPlacement::Overlay(id) => format!(",i={id},z=1"),
+         KittyPlacement::Virtual(id) => format!(",i={id},U=1"),
+     }
+ }
+diff --git i/codex-rs/tui/src/transcript_image.rs w/codex-rs/tui/src/transcript_image.rs
+index 4a6d695..18c96ac 100644
+--- i/codex-rs/tui/src/transcript_image.rs
++++ w/codex-rs/tui/src/transcript_image.rs
+@@ -8,6 +8,7 @@ pub(crate) mod composer;
+ 
+ use std::io::Write;
+ use std::path::Path;
++use std::path::PathBuf;
+ use std::sync::Arc;
+ 
+ use anyhow::Result;
+@@ -17,6 +18,7 @@ use crossterm::queue;
+ use image::DynamicImage;
+ use image::ImageFormat;
+ use image::RgbaImage;
++use ratatui::layout::Position;
+ use ratatui::layout::Rect;
+ 
+ use crate::pets::ImageProtocol;
+@@ -53,6 +55,8 @@ impl PartialEq for ImagePlacement {
+ }
+ 
+ pub(crate) struct TranscriptImage {
++    // Only original thumbnails have a source. The hover placement is a derived raster.
++    pub(crate) source: Option<PathBuf>,
+     pub(crate) protocol: ImageProtocol,
+     pub(crate) columns: u16,
+     pub(crate) rows: u16,
+@@ -61,6 +65,80 @@ pub(crate) struct TranscriptImage {
+     pub(crate) cell_height: u32,
+ }
+ 
++#[derive(Default)]
++pub(crate) struct ImageHover {
++    // Keep one enlarged raster, even when the pointer briefly leaves its thumbnail.
++    cached: Option<(Arc<TranscriptImage>, u16, u16, Option<Arc<TranscriptImage>>)>,
++}
++
++impl ImageHover {
++    pub(crate) fn target(
++        placements: &[ImagePlacement],
++        position: Option<Position>,
++    ) -> Option<&ImagePlacement> {
++        let position = position?;
++        placements.iter().rev().find(|placement| {
++            placement.image.source.is_some()
++                && placement.image.protocol != ImageProtocol::Sixel
++                && placement.area.contains(position)
++        })
++    }
++
++    pub(crate) fn paint(&mut self, frame: &mut crate::custom_terminal::Frame, position: Position) {
++        let Some(target) = Self::target(&frame.image_placements, Some(position)) else {
++            return;
++        };
++        let viewport = frame.area();
++        let above = target.area.y.saturating_sub(viewport.y);
++        let below = viewport.bottom().saturating_sub(target.area.bottom());
++        let width = viewport.width.saturating_sub(2).min(96);
++        let height = above.max(below).saturating_sub(1).min(22);
++        if width < 8 || height < 4 {
++            return;
++        }
++        if !self.cached.as_ref().is_some_and(|(source, w, h, _)| {
++            Arc::ptr_eq(source, &target.image) && (*w, *h) == (width, height)
++        }) {
++            let (cell_width, cell_height) = terminal_cell_size().unwrap_or((8, 16));
++            let image = target.image.source.as_deref().and_then(|path| {
++                let pixels = TranscriptImage::load_pixels(
++                    path,
++                    (u32::from(width) * cell_width).min(1024),
++                    (u32::from(height) * cell_height).min(640),
++                )?;
++                Some(Arc::new(TranscriptImage {
++                    source: None,
++                    protocol: target.image.protocol,
++                    columns: pixels.width().div_ceil(cell_width) as u16,
++                    rows: pixels.height().div_ceil(cell_height) as u16,
++                    pixels,
++                    cell_width,
++                    cell_height,
++                }))
++            });
++            self.cached = Some((Arc::clone(&target.image), width, height, image));
++        }
++        let Some((_, _, _, Some(image))) = &self.cached else {
++            return;
++        };
++        let x = target
++            .area
++            .x
++            .clamp(viewport.x, viewport.right() - image.columns);
++        let y = if above >= below {
++            target.area.y - image.rows - 1
++        } else {
++            target.area.bottom() + 1
++        };
++        frame.image_placements.push(ImagePlacement {
++            image: Arc::clone(image),
++            area: Rect::new(x, y, image.columns, image.rows),
++            first_row: 0,
++            file: None,
++        });
++    }
++}
++
+ pub(crate) fn terminal_cell_size() -> Option<(u32, u32)> {
+     crossterm::terminal::window_size()
+         .ok()
+@@ -114,6 +192,7 @@ impl TranscriptImage {
+             (6 * cell_height).min(max_height),
+         )?;
+         Some(Self {
++            source: Some(path.to_path_buf()),
+             protocol,
+             columns: pixels.width().div_ceil(cell_width) as u16,
+             rows: pixels.height().div_ceil(cell_height) as u16,
+diff --git i/codex-rs/tui/src/transcript_image/composer.rs w/codex-rs/tui/src/transcript_image/composer.rs
+index ee30881..1f94941 100644
+--- i/codex-rs/tui/src/transcript_image/composer.rs
++++ w/codex-rs/tui/src/transcript_image/composer.rs
+@@ -177,6 +177,7 @@ impl ComposerImages {
+             i64::from((height - pixels.height()) / 2),
+         );
+         Some(TranscriptImage {
++            source: Some(path.to_path_buf()),
+             protocol: self.protocol,
+             columns: WIDTH,
+             rows: HEIGHT,
+diff --git i/codex-rs/tui/src/tui.rs w/codex-rs/tui/src/tui.rs
+index d5b1ac0..4638e2e 100644
+--- i/codex-rs/tui/src/tui.rs
++++ w/codex-rs/tui/src/tui.rs
+@@ -721,6 +721,7 @@ pub struct Tui {
+     ambient_pet_image_state: crate::pets::PetImageRenderState,
+     pet_picker_preview_image_state: crate::pets::PetImageRenderState,
+     pub(crate) retained_images: Vec<crate::transcript_image::ImagePlacement>,
++    image_hover: crate::transcript_image::ImageHover,
+     alt_saved_viewport: Option<ratatui::layout::Rect>,
+     #[cfg(unix)]
+     suspend_context: SuspendContext,
+@@ -802,6 +803,7 @@ impl Tui {
+             ambient_pet_image_state: crate::pets::PetImageRenderState::default(),
+             pet_picker_preview_image_state: crate::pets::PetImageRenderState::default(),
+             retained_images: Vec::new(),
++            image_hover: crate::transcript_image::ImageHover::default(),
+             alt_saved_viewport: None,
+             #[cfg(unix)]
+             suspend_context: SuspendContext::new(),
+@@ -1386,6 +1388,17 @@ impl Tui {
+         false
+     }
+ 
++    pub(crate) fn image_hover_target(
++        &self,
++        position: Option<ratatui::layout::Position>,
++    ) -> Option<Rect> {
++        if !self.owned_screen || self.terminal.tmux_kitty_image_base.is_some() {
++            return None;
++        }
++        crate::transcript_image::ImageHover::target(&self.retained_images, position)
++            .map(|target| target.area)
++    }
++
+     pub(crate) fn shortcut_hud_contains(&self, mouse: crossterm::event::MouseEvent) -> bool {
+         self.shortcut_hud_area
+             .is_some_and(|area| area.contains((mouse.column, mouse.row).into()))
+@@ -1487,9 +1500,19 @@ impl Tui {
+                 self.suspend_context.set_cursor_y(inline_area_bottom);
+             }
+ 
++            let terminal_supports_hover = terminal.tmux_kitty_image_base.is_none();
+             terminal.draw_with_size(screen_size, &mut self.retained_images, |frame| {
+                 draw_fn(frame);
+                 self.shortcut_hud_area = self.shortcut_hud.as_ref().map(|hud| hud.paint(frame));
++                if self.owned_screen
++                    && terminal_supports_hover
++                    && let Some(position) = self.link_hover.position()
++                    && !self
++                        .shortcut_hud_area
++                        .is_some_and(|area| area.contains(position))
++                {
++                    self.image_hover.paint(frame, position);
++                }
+             })
+         })??;
+         Ok(())
