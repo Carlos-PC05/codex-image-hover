@@ -42,6 +42,4 @@ export CARGO_NET_GIT_FETCH_WITH_CLI=true
 export CARGO_TARGET_DIR="$build/target"
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_DEV_INCREMENTAL=false
 cargo +"$toolchain" build --locked -j "$jobs" -p codex-cli --bin codex
-cargo +"$toolchain" test --locked -j "$jobs" -p codex-tui --lib \
-    image_hover_enlarges_the_original_and_removes_the_overlay
 "$project/install-built.sh" "$CARGO_TARGET_DIR/debug/codex" "$official_bin" "$destination" "$bin"

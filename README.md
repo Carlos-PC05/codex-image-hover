@@ -23,6 +23,12 @@ The launcher defaults to `~/.local/bin/codex-preview` and enables the fullscreen
 
 The patch is pinned to Codex CLI **0.170.0**. Updating your official `codex` leaves this build at that version. To port the patch, update the pinned tag and commit, check that it applies, and run the included hover regression test against the new upstream source. Rebuild and reinstall to pick up new Codex fixes.
 
+From the patched upstream `codex-rs` directory, run the focused regression test with:
+
+```sh
+cargo +1.95.0 test --locked -p codex-tui --lib image_hover_enlarges_the_original_and_removes_the_overlay
+```
+
 Remove `~/.local/bin/codex-preview` and `${XDG_DATA_HOME:-~/.local/share}/codex-image-hover` to uninstall the patch.
 
 The patch and installer are distributed under Apache-2.0. Codex is maintained by OpenAI.
